@@ -1,0 +1,4 @@
+deal_id;discriminator;currency_id;current_principal_amt;deal_dttm;maturity_dttm;rate_type_cd;interest_rate;day_convention_cd;regular_payment_rule_start_dttm;regular_payment_rule_period_cd;product;behavior_model_cd
+1;ANN;RUB;3646037.89;22.06.2020;15.06.2050;FIXED;0.075;ACT/ACT;22.06.2020;1M;mortgage;PREPAYMENT_MORTGAGE
+2;RGM;RUB;3646037.89;22.06.2020;15.06.2050;FIXED;0.075;ACT/ACT;22.06.2020;1M;consumer_loans;PREPAYMENT_CONSUMER
+3;INVALID;RUB;0;22.06.2020;15.06.2020;FIXED;0.075;ACT/ACT;22.06.2020;1M;mortgage;
