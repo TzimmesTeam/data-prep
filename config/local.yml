@@ -1,8 +1,36 @@
 env: "local"
+startup_timeout: 15s
 
 http:
   port: 8080
+  shutdown_timeout: 15s
 
 batch:
-  max_size: 100000
-  partition_size: 1000
+  max_rows: 100000
+  partition_rows: 1000
+  partition_bytes: 8388608
+  rejected_log_limit: 10
+
+s3:
+  region: "us-east-1"
+  endpoint: "http://minio:9000"
+  access_key_id: "minioadmin"
+  secret_access_key: "minioadmin"
+  use_path_style: true
+  buckets: ["data-lake"]
+
+jetstream:
+  url: "nats://nats:4222"
+  tasks_stream: "DATA_PREP_TASKS"
+  results_stream: "DATA_PREP_RESULTS"
+  task_subject: "data-prep.tasks"
+  result_subject: "data-prep.results.completed"
+  failed_subject: "data-prep.tasks.failed"
+  consumer_durable: "data-prep-workers"
+  parallelism: 2
+  delivery_limit: 5
+  dial_timeout: 5s
+  reconnect_delay: 2s
+  fetch_wait: 5s
+  ack_wait: 11m
+  task_timeout: 10m
