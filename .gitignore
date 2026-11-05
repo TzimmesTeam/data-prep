@@ -17,6 +17,7 @@ main
 
 logs/
 *.log
+*.out
 
 tmp/
 temp/
