@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
-	prephandler "github.com/TzimmesTeam/data-prep/internal/handler/prep"
 	"github.com/gin-gonic/gin"
 )
 
@@ -15,20 +15,25 @@ type App struct {
 	log    *slog.Logger
 }
 
-func New(port int, handler *prephandler.Handler, log *slog.Logger) *App {
+func New(port int, readiness func(context.Context) bool, log *slog.Logger) *App {
 	router := gin.New()
 	router.Use(gin.Recovery())
-
-	router.POST("/prep", handler.Prep)
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
+	router.GET("/health/ready", func(c *gin.Context) {
+		if !readiness(c.Request.Context()) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not_ready"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ready"})
+	})
 
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", port),
-		Handler: router,
+		Addr:              fmt.Sprintf(":%d", port),
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
-
 	return &App{server: server, log: log}
 }
 
