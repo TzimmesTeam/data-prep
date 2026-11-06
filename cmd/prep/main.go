@@ -22,14 +22,15 @@ func main() {
 	}
 
 	log.Info("application initialized")
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	go func() {
 		<-ctx.Done()
 		log.Info("shutdown signal received")
-		if err := application.Stop(context.Background()); err != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.HTTP.ShutdownTimeout)
+		defer cancel()
+		if err := application.Stop(shutdownCtx); err != nil {
 			log.Error("failed to stop app", "error", err)
 		}
 	}()
@@ -38,6 +39,5 @@ func main() {
 		log.Error("application run failed", "error", err)
 		os.Exit(1)
 	}
-
 	log.Info("application stopped")
 }
