@@ -7,16 +7,17 @@ import (
 	"net/http"
 
 	httpapp "github.com/TzimmesTeam/data-prep/internal/app/http"
+	"github.com/TzimmesTeam/data-prep/internal/client/controlplane"
 	"github.com/TzimmesTeam/data-prep/internal/config"
 	prephandler "github.com/TzimmesTeam/data-prep/internal/handler/prep"
 	prepservice "github.com/TzimmesTeam/data-prep/internal/service/prep"
 	s3storage "github.com/TzimmesTeam/data-prep/internal/storage/s3"
-	"github.com/TzimmesTeam/data-prep/internal/transport/jetstream"
+	sqstransport "github.com/TzimmesTeam/data-prep/internal/transport/sqs"
 )
 
 type App struct {
 	HTTP  *httpapp.App
-	Queue *jetstream.Transport
+	Queue *sqstransport.Transport
 	log   *slog.Logger
 }
 
@@ -42,22 +43,26 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 		Curated:    cfg.S3.CuratedBucket,
 		Quarantine: cfg.S3.QuarantineBucket,
 	}, log)
-	queue := jetstream.New(jetstream.Config{
-		URL:             cfg.JetStream.URL,
-		TasksStream:     cfg.JetStream.TasksStream,
-		ResultsStream:   cfg.JetStream.ResultsStream,
-		TaskSubject:     cfg.JetStream.TaskSubject,
-		ResultSubject:   cfg.JetStream.ResultSubject,
-		FailedSubject:   cfg.JetStream.FailedSubject,
-		ConsumerDurable: cfg.JetStream.ConsumerDurable,
-		Parallelism:     cfg.JetStream.Parallelism,
-		DeliveryLimit:   cfg.JetStream.DeliveryLimit,
-		DialTimeout:     cfg.JetStream.DialTimeout,
-		ReconnectDelay:  cfg.JetStream.ReconnectDelay,
-		FetchWait:       cfg.JetStream.FetchWait,
-		AckWait:         cfg.JetStream.AckWait,
-		TaskTimeout:     cfg.JetStream.TaskTimeout,
-	}, svc, log)
+	notifier := controlplane.New(controlplane.Config{
+		URL:         cfg.ControlPlane.URL,
+		Timeout:     cfg.ControlPlane.Timeout,
+		MaxAttempts: cfg.ControlPlane.MaxAttempts,
+		RetryDelay:  cfg.ControlPlane.RetryDelay,
+	})
+	queue, err := sqstransport.New(sqstransport.Config{
+		Region:            cfg.SQS.Region,
+		Endpoint:          cfg.SQS.Endpoint,
+		QueueURL:          cfg.SQS.QueueURL,
+		AccessKeyID:       cfg.SQS.AccessKeyID,
+		SecretAccessKey:   cfg.SQS.SecretAccessKey,
+		RawBucket:         cfg.S3.RawBucket,
+		WaitTimeSeconds:   cfg.SQS.WaitTimeSeconds,
+		VisibilityTimeout: cfg.SQS.VisibilityTimeout,
+		ReconnectDelay:    cfg.SQS.ReconnectDelay,
+	}, svc, notifier, log)
+	if err != nil {
+		return nil, err
+	}
 	httpServer := httpapp.New(cfg.HTTP.Port, func(ctx context.Context) bool {
 		return queue.Ready() && store.CheckConfiguredBuckets(ctx) == nil
 	}, log)

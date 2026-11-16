@@ -1,15 +1,9 @@
 env: "local"
-startup_timeout: 15s
+startup_timeout: 30s
 
 http:
   port: 8080
   shutdown_timeout: 15s
-
-batch:
-  max_rows: 100000
-  partition_rows: 1000
-  partition_bytes: 8388608
-  rejected_log_limit: 10
 
 s3:
   region: "us-east-1"
@@ -21,18 +15,18 @@ s3:
   curated_bucket: "curated"
   quarantine_bucket: "quarantine"
 
-jetstream:
-  url: "nats://nats:4222"
-  tasks_stream: "DATA_PREP_TASKS"
-  results_stream: "DATA_PREP_RESULTS"
-  task_subject: "data-prep.tasks"
-  result_subject: "data-prep.results.completed"
-  failed_subject: "data-prep.tasks.failed"
-  consumer_durable: "data-prep-workers"
-  parallelism: 2
-  delivery_limit: 5
-  dial_timeout: 5s
+sqs:
+  region: "us-east-1"
+  endpoint: "http://localstack:4566"
+  queue_url: "http://localstack:4566/000000000000/data-prep-raw-events"
+  access_key_id: "test"
+  secret_access_key: "test"
+  wait_time_seconds: 20
+  visibility_timeout: 300
   reconnect_delay: 2s
-  fetch_wait: 5s
-  ack_wait: 11m
-  task_timeout: 10m
+
+control_plane:
+  url: "http://control-plane-stub:8080/snapshots/prepared"
+  timeout: 10s
+  max_attempts: 3
+  retry_delay: 1s

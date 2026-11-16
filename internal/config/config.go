@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"time"
 
@@ -14,21 +15,14 @@ type Config struct {
 	Env            string        `yaml:"env" env-default:"local"`
 	StartupTimeout time.Duration `yaml:"startup_timeout"`
 	HTTP           HTTP          `yaml:"http"`
-	Batch          Batch         `yaml:"batch"`
 	S3             S3            `yaml:"s3"`
-	JetStream      JetStream     `yaml:"jetstream"`
+	SQS            SQS           `yaml:"sqs"`
+	ControlPlane   ControlPlane  `yaml:"control_plane"`
 }
 
 type HTTP struct {
 	Port            int           `yaml:"port"`
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
-}
-
-type Batch struct {
-	MaxRows          int `yaml:"max_rows"`
-	PartitionRows    int `yaml:"partition_rows"`
-	PartitionBytes   int `yaml:"partition_bytes"`
-	RejectedLogLimit int `yaml:"rejected_log_limit"`
 }
 
 type S3 struct {
@@ -42,21 +36,22 @@ type S3 struct {
 	QuarantineBucket string `yaml:"quarantine_bucket" env:"S3_QUARANTINE_BUCKET"`
 }
 
-type JetStream struct {
-	URL             string        `yaml:"url" env:"NATS_URL"`
-	TasksStream     string        `yaml:"tasks_stream"`
-	ResultsStream   string        `yaml:"results_stream"`
-	TaskSubject     string        `yaml:"task_subject"`
-	ResultSubject   string        `yaml:"result_subject"`
-	FailedSubject   string        `yaml:"failed_subject"`
-	ConsumerDurable string        `yaml:"consumer_durable"`
-	Parallelism     int           `yaml:"parallelism"`
-	DeliveryLimit   int           `yaml:"delivery_limit"`
-	DialTimeout     time.Duration `yaml:"dial_timeout"`
-	ReconnectDelay  time.Duration `yaml:"reconnect_delay"`
-	FetchWait       time.Duration `yaml:"fetch_wait"`
-	AckWait         time.Duration `yaml:"ack_wait"`
-	TaskTimeout     time.Duration `yaml:"task_timeout"`
+type SQS struct {
+	Region            string        `yaml:"region"`
+	Endpoint          string        `yaml:"endpoint"`
+	QueueURL          string        `yaml:"queue_url" env:"SQS_QUEUE_URL"`
+	AccessKeyID       string        `yaml:"access_key_id" env:"SQS_ACCESS_KEY_ID"`
+	SecretAccessKey   string        `yaml:"secret_access_key" env:"SQS_SECRET_ACCESS_KEY"`
+	WaitTimeSeconds   int32         `yaml:"wait_time_seconds"`
+	VisibilityTimeout int32         `yaml:"visibility_timeout"`
+	ReconnectDelay    time.Duration `yaml:"reconnect_delay"`
+}
+
+type ControlPlane struct {
+	URL         string        `yaml:"url" env:"CONTROL_PLANE_URL"`
+	Timeout     time.Duration `yaml:"timeout"`
+	MaxAttempts int           `yaml:"max_attempts"`
+	RetryDelay  time.Duration `yaml:"retry_delay"`
 }
 
 func MustLoad() *Config {
@@ -85,28 +80,21 @@ func (c *Config) Validate() error {
 	if c.HTTP.Port < 1 || c.HTTP.Port > 65535 {
 		return fmt.Errorf("invalid HTTP port")
 	}
-	if c.Batch.MaxRows <= 0 || c.Batch.PartitionRows <= 0 || c.Batch.PartitionBytes <= 0 || c.Batch.RejectedLogLimit < 0 {
-		return fmt.Errorf("invalid batch limits")
-	}
 	if c.S3.Region == "" || c.S3.AccessKeyID == "" || c.S3.SecretAccessKey == "" ||
 		c.S3.RawBucket == "" || c.S3.CuratedBucket == "" || c.S3.QuarantineBucket == "" {
 		return fmt.Errorf("incomplete S3 config")
 	}
-	if c.JetStream.URL == "" {
-		return fmt.Errorf("NATS URL is empty")
+	if c.SQS.Region == "" || c.SQS.QueueURL == "" || c.SQS.AccessKeyID == "" || c.SQS.SecretAccessKey == "" {
+		return fmt.Errorf("incomplete SQS config")
 	}
-	if c.JetStream.TasksStream == "" || c.JetStream.ResultsStream == "" ||
-		c.JetStream.TaskSubject == "" || c.JetStream.ResultSubject == "" ||
-		c.JetStream.FailedSubject == "" || c.JetStream.ConsumerDurable == "" {
-		return fmt.Errorf("incomplete JetStream topology config")
+	if c.SQS.WaitTimeSeconds < 0 || c.SQS.WaitTimeSeconds > 20 || c.SQS.VisibilityTimeout <= 0 || c.SQS.ReconnectDelay <= 0 {
+		return fmt.Errorf("invalid SQS polling config")
 	}
-	if c.JetStream.Parallelism <= 0 || c.JetStream.DeliveryLimit <= 0 ||
-		c.JetStream.DialTimeout <= 0 || c.JetStream.ReconnectDelay <= 0 ||
-		c.JetStream.FetchWait <= 0 || c.JetStream.AckWait <= 0 || c.JetStream.TaskTimeout <= 0 {
-		return fmt.Errorf("invalid JetStream limits or timeouts")
+	if _, err := url.ParseRequestURI(c.ControlPlane.URL); err != nil {
+		return fmt.Errorf("invalid control plane URL: %w", err)
 	}
-	if c.JetStream.AckWait <= c.JetStream.TaskTimeout {
-		return fmt.Errorf("JetStream ack_wait must exceed task_timeout")
+	if c.ControlPlane.Timeout <= 0 || c.ControlPlane.MaxAttempts <= 0 || c.ControlPlane.RetryDelay <= 0 {
+		return fmt.Errorf("invalid control plane client config")
 	}
 	return nil
 }

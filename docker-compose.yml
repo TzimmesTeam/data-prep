@@ -5,10 +5,10 @@ services:
       - "8080:8080"
     restart: unless-stopped
     depends_on:
-      nats:
-        condition: service_healthy
       bucket-init:
         condition: service_completed_successfully
+      control-plane-stub:
+        condition: service_started
 
   minio:
     image: pgsty/minio:RELEASE.2026-04-17T00-00-00Z
@@ -48,19 +48,19 @@ services:
           *) mc event add local/raw arn:minio:sqs::RAW_EVENTS:webhook --event put --suffix .csv ;;
         esac
 
-  nats:
-    image: nats:2.11.6-alpine
-    command: ["-js", "-sd", "/data", "-m", "8222"]
-    ports:
-      - "4222:4222"
-      - "8222:8222"
-    volumes:
-      - nats-data:/data
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8222/healthz"]
-      interval: 3s
-      timeout: 2s
-      retries: 20
+  event-bridge:
+    build:
+      context: .
+      dockerfile: deploy/event-bridge/Dockerfile
+    environment:
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_ENDPOINT: "http://localstack:4566"
+      SQS_QUEUE_URL: "http://localstack:4566/000000000000/data-prep-raw-events"
+    depends_on:
+      localstack:
+        condition: service_healthy
 
   localstack:
     image: localstack/localstack:3.8
@@ -80,20 +80,6 @@ services:
       timeout: 2s
       retries: 40
 
-  event-bridge:
-    build:
-      context: .
-      dockerfile: deploy/event-bridge/Dockerfile
-    environment:
-      AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
-      SQS_ENDPOINT: "http://localstack:4566"
-      SQS_QUEUE_URL: "http://localstack:4566/000000000000/data-prep-raw-events"
-    depends_on:
-      localstack:
-        condition: service_healthy
-
   control-plane-stub:
     image: mendhak/http-https-echo:31
     environment:
@@ -103,5 +89,4 @@ services:
 
 volumes:
   minio-data:
-  nats-data:
   localstack-data:
