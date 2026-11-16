@@ -460,7 +460,7 @@ func (d *rowDecoder) timestamp(name string) *int64 {
 		d.add(name, err.Error())
 		return nil
 	}
-	result := parsed.Time.Unix()
+	result := parsed.Unix()
 	return &result
 }
 
@@ -546,7 +546,7 @@ func (d *rowDecoder) dates(name string) []int64 {
 			d.add(name, err.Error())
 			continue
 		}
-		result = append(result, parsed.Time.Unix())
+		result = append(result, parsed.Unix())
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
 	unique := result[:0]
@@ -584,7 +584,7 @@ func (d *rowDecoder) datedNumbers(name string) ([]int64, []float64) {
 			d.add(name, "invalid date/number entry: "+part)
 			continue
 		}
-		entries = append(entries, datedNumber{date: date.Time.Unix(), value: number})
+		entries = append(entries, datedNumber{date: date.Unix(), value: number})
 	}
 	sort.SliceStable(entries, func(i, j int) bool { return entries[i].date < entries[j].date })
 	unique := entries[:0]

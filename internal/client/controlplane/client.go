@@ -63,7 +63,7 @@ func (c *Client) send(ctx context.Context, body []byte) error {
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
 		return nil

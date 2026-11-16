@@ -56,7 +56,7 @@ func (s *Service) Prep(ctx context.Context, delivery models.Delivery) (models.Pr
 
 	sink, err := newParquetSink(s.log)
 	if err != nil {
-		body.Close()
+		_ = body.Close()
 		return result, err
 	}
 	defer sink.cleanup()

@@ -28,8 +28,8 @@ func newParquetSink(log *slog.Logger) (*parquetSink, error) {
 	}
 	rejectedFile, err := os.CreateTemp("", "data-prep-rejected-*.parquet")
 	if err != nil {
-		dealsFile.Close()
-		os.Remove(dealsFile.Name())
+		_ = dealsFile.Close()
+		_ = os.Remove(dealsFile.Name())
 		return nil, fmt.Errorf("create quarantine temporary file: %w", err)
 	}
 	return &parquetSink{
@@ -91,12 +91,12 @@ func (s *parquetSink) upload(ctx context.Context, store ObjectStore, file *os.Fi
 
 func (s *parquetSink) cleanup() {
 	if s.dealsFile != nil {
-		s.dealsFile.Close()
-		os.Remove(s.dealsFile.Name())
+		_ = s.dealsFile.Close()
+		_ = os.Remove(s.dealsFile.Name())
 	}
 	if s.rejectedFile != nil {
-		s.rejectedFile.Close()
-		os.Remove(s.rejectedFile.Name())
+		_ = s.rejectedFile.Close()
+		_ = os.Remove(s.rejectedFile.Name())
 	}
 }
 
