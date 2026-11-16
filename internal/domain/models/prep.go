@@ -56,3 +56,7 @@ type PrepResult struct {
 	Stats          Stats  `json:"stats"`
 	Error          string `json:"error,omitempty"`
 }
+
+type Callback struct {
+	SnapshotID string `json:"snapshot_id"`
+}
