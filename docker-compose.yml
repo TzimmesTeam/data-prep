@@ -16,11 +16,17 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_NOTIFY_WEBHOOK_ENABLE_RAW_EVENTS: "on"
+      MINIO_NOTIFY_WEBHOOK_ENDPOINT_RAW_EVENTS: "http://event-bridge:8080/events"
+      MINIO_NOTIFY_WEBHOOK_QUEUE_DIR_RAW_EVENTS: "/tmp/minio-events"
     ports:
       - "9000:9000"
       - "9001:9001"
     volumes:
       - minio-data:/data
+    depends_on:
+      event-bridge:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 3s
@@ -36,7 +42,11 @@ services:
     command:
       - >-
         mc alias set local http://minio:9000 minioadmin minioadmin &&
-        mc mb --ignore-existing local/raw local/curated local/quarantine
+        mc mb --ignore-existing local/raw local/curated local/quarantine &&
+        case "$(mc event ls local/raw)" in
+          *arn:minio:sqs::RAW_EVENTS:webhook*) ;;
+          *) mc event add local/raw arn:minio:sqs::RAW_EVENTS:webhook --event put --suffix .csv ;;
+        esac
 
   nats:
     image: nats:2.11.6-alpine
@@ -52,6 +62,46 @@ services:
       timeout: 2s
       retries: 20
 
+  localstack:
+    image: localstack/localstack:3.8
+    environment:
+      SERVICES: sqs
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    ports:
+      - "4566:4566"
+    volumes:
+      - ./deploy/localstack/init.sh:/etc/localstack/init/ready.d/init.sh:ro
+      - localstack-data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 3s
+      timeout: 2s
+      retries: 40
+
+  event-bridge:
+    build:
+      context: .
+      dockerfile: deploy/event-bridge/Dockerfile
+    environment:
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_ENDPOINT: "http://localstack:4566"
+      SQS_QUEUE_URL: "http://localstack:4566/000000000000/data-prep-raw-events"
+    depends_on:
+      localstack:
+        condition: service_healthy
+
+  control-plane-stub:
+    image: mendhak/http-https-echo:31
+    environment:
+      HTTP_PORT: 8080
+    ports:
+      - "8081:8080"
+
 volumes:
   minio-data:
   nats-data:
+  localstack-data:
