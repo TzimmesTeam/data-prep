@@ -5,10 +5,10 @@ services:
       - "8080:8080"
     restart: unless-stopped
     depends_on:
-      nats:
-        condition: service_healthy
       bucket-init:
         condition: service_completed_successfully
+      control-plane-stub:
+        condition: service_started
 
   minio:
     image: pgsty/minio:RELEASE.2026-04-17T00-00-00Z
@@ -16,11 +16,17 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_NOTIFY_WEBHOOK_ENABLE_RAW_EVENTS: "on"
+      MINIO_NOTIFY_WEBHOOK_ENDPOINT_RAW_EVENTS: "http://event-bridge:8080/events"
+      MINIO_NOTIFY_WEBHOOK_QUEUE_DIR_RAW_EVENTS: "/tmp/minio-events"
     ports:
       - "9000:9000"
       - "9001:9001"
     volumes:
       - minio-data:/data
+    depends_on:
+      event-bridge:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 3s
@@ -36,22 +42,51 @@ services:
     command:
       - >-
         mc alias set local http://minio:9000 minioadmin minioadmin &&
-        mc mb --ignore-existing local/data-lake
+        mc mb --ignore-existing local/raw local/curated local/quarantine &&
+        case "$(mc event ls local/raw)" in
+          *arn:minio:sqs::RAW_EVENTS:webhook*) ;;
+          *) mc event add local/raw arn:minio:sqs::RAW_EVENTS:webhook --event put --suffix .csv ;;
+        esac
 
-  nats:
-    image: nats:2.11.6-alpine
-    command: ["-js", "-sd", "/data", "-m", "8222"]
+  event-bridge:
+    build:
+      context: .
+      dockerfile: deploy/event-bridge/Dockerfile
+    environment:
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_ENDPOINT: "http://localstack:4566"
+      SQS_QUEUE_URL: "http://localstack:4566/000000000000/data-prep-raw-events"
+    depends_on:
+      localstack:
+        condition: service_healthy
+
+  localstack:
+    image: localstack/localstack:3.8
+    environment:
+      SERVICES: sqs
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
     ports:
-      - "4222:4222"
-      - "8222:8222"
+      - "4566:4566"
     volumes:
-      - nats-data:/data
+      - ./deploy/localstack/init.sh:/etc/localstack/init/ready.d/init.sh:ro
+      - localstack-data:/var/lib/localstack
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8222/healthz"]
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
       interval: 3s
       timeout: 2s
-      retries: 20
+      retries: 40
+
+  control-plane-stub:
+    image: mendhak/http-https-echo:31
+    environment:
+      HTTP_PORT: 8080
+    ports:
+      - "8081:8080"
 
 volumes:
   minio-data:
-  nats-data:
+  localstack-data:
