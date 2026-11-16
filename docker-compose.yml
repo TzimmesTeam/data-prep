@@ -36,7 +36,7 @@ services:
     command:
       - >-
         mc alias set local http://minio:9000 minioadmin minioadmin &&
-        mc mb --ignore-existing local/data-lake
+        mc mb --ignore-existing local/raw local/curated local/quarantine
 
   nats:
     image: nats:2.11.6-alpine

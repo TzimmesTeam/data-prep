@@ -32,12 +32,14 @@ type Batch struct {
 }
 
 type S3 struct {
-	Region          string   `yaml:"region"`
-	Endpoint        string   `yaml:"endpoint"`
-	AccessKeyID     string   `yaml:"access_key_id" env:"S3_ACCESS_KEY_ID"`
-	SecretAccessKey string   `yaml:"secret_access_key" env:"S3_SECRET_ACCESS_KEY"`
-	UsePathStyle    bool     `yaml:"use_path_style"`
-	Buckets         []string `yaml:"buckets" env:"S3_BUCKETS" env-separator:","`
+	Region           string `yaml:"region"`
+	Endpoint         string `yaml:"endpoint"`
+	AccessKeyID      string `yaml:"access_key_id" env:"S3_ACCESS_KEY_ID"`
+	SecretAccessKey  string `yaml:"secret_access_key" env:"S3_SECRET_ACCESS_KEY"`
+	UsePathStyle     bool   `yaml:"use_path_style"`
+	RawBucket        string `yaml:"raw_bucket" env:"S3_RAW_BUCKET"`
+	CuratedBucket    string `yaml:"curated_bucket" env:"S3_CURATED_BUCKET"`
+	QuarantineBucket string `yaml:"quarantine_bucket" env:"S3_QUARANTINE_BUCKET"`
 }
 
 type JetStream struct {
@@ -86,7 +88,8 @@ func (c *Config) Validate() error {
 	if c.Batch.MaxRows <= 0 || c.Batch.PartitionRows <= 0 || c.Batch.PartitionBytes <= 0 || c.Batch.RejectedLogLimit < 0 {
 		return fmt.Errorf("invalid batch limits")
 	}
-	if c.S3.Region == "" || c.S3.AccessKeyID == "" || c.S3.SecretAccessKey == "" || len(c.S3.Buckets) == 0 {
+	if c.S3.Region == "" || c.S3.AccessKeyID == "" || c.S3.SecretAccessKey == "" ||
+		c.S3.RawBucket == "" || c.S3.CuratedBucket == "" || c.S3.QuarantineBucket == "" {
 		return fmt.Errorf("incomplete S3 config")
 	}
 	if c.JetStream.URL == "" {

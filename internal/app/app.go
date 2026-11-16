@@ -29,7 +29,7 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 		AccessKeyID:     cfg.S3.AccessKeyID,
 		SecretAccessKey: cfg.S3.SecretAccessKey,
 		UsePathStyle:    cfg.S3.UsePathStyle,
-		Buckets:         cfg.S3.Buckets,
+		Buckets:         []string{cfg.S3.RawBucket, cfg.S3.CuratedBucket, cfg.S3.QuarantineBucket},
 	})
 	if err != nil {
 		return nil, err
