@@ -38,11 +38,9 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 		return nil, err
 	}
 
-	svc := prepservice.New(store, prephandler.NewParser(log), prepservice.Options{
-		MaxRows:          cfg.Batch.MaxRows,
-		PartitionRows:    cfg.Batch.PartitionRows,
-		PartitionBytes:   cfg.Batch.PartitionBytes,
-		RejectedLogLimit: cfg.Batch.RejectedLogLimit,
+	svc := prepservice.New(store, prephandler.NewParser(log), prepservice.Buckets{
+		Curated:    cfg.S3.CuratedBucket,
+		Quarantine: cfg.S3.QuarantineBucket,
 	}, log)
 	queue := jetstream.New(jetstream.Config{
 		URL:             cfg.JetStream.URL,

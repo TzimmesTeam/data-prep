@@ -1,7 +1,6 @@
 package s3
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -143,12 +142,13 @@ func (s *Storage) OpenSource(ctx context.Context, uri URI, source models.Source)
 	return output.Body, nil
 }
 
-func (s *Storage) Put(ctx context.Context, uri URI, body []byte, contentType string) error {
+func (s *Storage) Put(ctx context.Context, uri URI, body io.Reader, size int64, contentType string) error {
 	_, err := s.client.PutObject(ctx, &awss3.PutObjectInput{
-		Bucket:      aws.String(uri.Bucket),
-		Key:         aws.String(uri.Key),
-		Body:        bytes.NewReader(body),
-		ContentType: aws.String(contentType),
+		Bucket:        aws.String(uri.Bucket),
+		Key:           aws.String(uri.Key),
+		Body:          body,
+		ContentLength: aws.Int64(size),
+		ContentType:   aws.String(contentType),
 	})
 	if err != nil {
 		return fmt.Errorf("put object %s: %w", uri.String(), err)

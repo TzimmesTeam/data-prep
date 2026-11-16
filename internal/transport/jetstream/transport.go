@@ -12,6 +12,7 @@ import (
 
 	"github.com/TzimmesTeam/data-prep/internal/domain/models"
 	prepservice "github.com/TzimmesTeam/data-prep/internal/service/prep"
+	s3storage "github.com/TzimmesTeam/data-prep/internal/storage/s3"
 	"github.com/nats-io/nats.go"
 	js "github.com/nats-io/nats.go/jetstream"
 )
@@ -192,27 +193,41 @@ func (t *Transport) consume(ctx context.Context, consumer js.Consumer) error {
 	}
 }
 
+type taskMessage struct {
+	RunID     string `json:"run_id"`
+	BatchID   string `json:"batch_id"`
+	Attempt   int    `json:"attempt"`
+	SourceURI string `json:"source_uri"`
+}
+
 func (t *Transport) handleTask(ctx context.Context, message js.Msg) error {
-	var req models.PrepRequest
-	if err := json.Unmarshal(message.Data(), &req); err != nil {
-		result := models.PrepResult{Status: "error", Error: "invalid task JSON: " + err.Error()}
-		if err := t.publishResult(ctx, result); err != nil {
+	var msg taskMessage
+	if err := json.Unmarshal(message.Data(), &msg); err != nil {
+		if err := t.publishResult(ctx, models.PrepResult{}); err != nil {
 			return err
 		}
 		return message.Ack()
 	}
 
-	taskCtx, cancel := context.WithTimeout(ctx, t.cfg.TaskTimeout)
-	defer cancel()
-	result, err := t.service.Prep(taskCtx, req)
-	if err == nil {
-		if err := t.publishResult(ctx, result); err != nil {
+	sourceURI, err := s3storage.ParseURI(msg.SourceURI)
+	if err != nil {
+		if err := t.publishResult(ctx, models.PrepResult{}); err != nil {
 			return err
 		}
 		return message.Ack()
 	}
-	var permanent *prepservice.PermanentError
-	if errors.As(err, &permanent) {
+	delivery := models.Delivery{
+		Bucket:     sourceURI.Bucket,
+		Key:        sourceURI.Key,
+		Source:     "jetstream",
+		IngestDate: time.Now().UTC().Format("2006-01-02"),
+		SnapshotID: msg.RunID,
+	}
+
+	taskCtx, cancel := context.WithTimeout(ctx, t.cfg.TaskTimeout)
+	defer cancel()
+	result, err := t.service.Prep(taskCtx, delivery)
+	if err == nil {
 		if err := t.publishResult(ctx, result); err != nil {
 			return err
 		}
@@ -224,21 +239,16 @@ func (t *Transport) handleTask(ctx context.Context, message js.Msg) error {
 		return fmt.Errorf("read task delivery metadata: %w", metadataErr)
 	}
 	if int(metadata.NumDelivered) >= t.cfg.DeliveryLimit {
-		result.Status = "error"
-		result.Error = "JetStream delivery limit exceeded: " + err.Error()
-		if err := t.publishResult(ctx, result); err != nil {
-			return err
-		}
-		if err := t.publishFailed(ctx, message, result); err != nil {
+		if err := t.publishFailed(ctx, message, msg, err); err != nil {
 			return err
 		}
 		return message.Ack()
 	}
 
 	t.log.ErrorContext(ctx, "task processing will be retried",
-		"run_id", req.RunID,
-		"batch_id", req.BatchID,
-		"attempt", req.Attempt,
+		"run_id", msg.RunID,
+		"batch_id", msg.BatchID,
+		"attempt", msg.Attempt,
 		"delivery", metadata.NumDelivered,
 		"error", err,
 	)
@@ -253,18 +263,13 @@ func (t *Transport) publishResult(ctx context.Context, result models.PrepResult)
 	if err != nil {
 		return fmt.Errorf("marshal result: %w", err)
 	}
-	messageID := fmt.Sprintf("%s/%s/%d/%s", result.RunID, result.BatchID, result.Attempt, result.SourceRevision)
-	if result.RunID == "" && result.BatchID == "" {
-		messageID = fmt.Sprintf("invalid/%d", time.Now().UnixNano())
-	}
+	messageID := fmt.Sprintf("%s/%s", result.Delivery.SnapshotID, result.Source.Revision)
 	message := &nats.Msg{
 		Subject: t.cfg.ResultSubject,
 		Data:    body,
 		Header: nats.Header{
-			"run_id":   []string{result.RunID},
-			"batch_id": []string{result.BatchID},
-			"attempt":  []string{fmt.Sprint(result.Attempt)},
-			"status":   []string{result.Status},
+			"snapshot_id": []string{result.Delivery.SnapshotID},
+			"status":      []string{"completed"},
 		},
 	}
 	if _, err := t.js.PublishMsg(ctx, message, js.WithMsgID(messageID)); err != nil {
@@ -273,26 +278,26 @@ func (t *Transport) publishResult(ctx context.Context, result models.PrepResult)
 	return nil
 }
 
-func (t *Transport) publishFailed(ctx context.Context, task js.Msg, result models.PrepResult) error {
-	messageID := fmt.Sprintf("%s/%s/%d/%s/failed", result.RunID, result.BatchID, result.Attempt, result.SourceRevision)
+func (t *Transport) publishFailed(ctx context.Context, task js.Msg, msg taskMessage, cause error) error {
+	messageID := fmt.Sprintf("%s/failed", msg.RunID)
 	message := &nats.Msg{
 		Subject: t.cfg.FailedSubject,
 		Data:    append([]byte(nil), task.Data()...),
 		Header: nats.Header{
-			"run_id":   []string{result.RunID},
-			"batch_id": []string{result.BatchID},
-			"attempt":  []string{fmt.Sprint(result.Attempt)},
-			"error":    []string{result.Error},
+			"run_id":   []string{msg.RunID},
+			"batch_id": []string{msg.BatchID},
+			"attempt":  []string{fmt.Sprint(msg.Attempt)},
+			"error":    []string{cause.Error()},
 		},
 	}
 	if _, err := t.js.PublishMsg(ctx, message, js.WithMsgID(messageID)); err != nil {
 		return fmt.Errorf("publish failed task: %w", err)
 	}
 	t.log.ErrorContext(ctx, "task moved to failed subject",
-		"run_id", result.RunID,
-		"batch_id", result.BatchID,
-		"attempt", result.Attempt,
-		"error", result.Error,
+		"run_id", msg.RunID,
+		"batch_id", msg.BatchID,
+		"attempt", msg.Attempt,
+		"error", cause,
 	)
 	return nil
 }
