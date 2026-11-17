@@ -58,7 +58,7 @@ type Storage struct {
 	buckets []string
 }
 
-func New(ctx context.Context, cfg Config) (*Storage, error) {
+func New(ctx context.Context, cfg *Config) (*Storage, error) {
 	options := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(cfg.Region)}
 	if cfg.AccessKeyID != "" {
 		options = append(options, awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(

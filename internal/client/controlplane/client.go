@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -80,7 +81,8 @@ func (e *statusError) Error() string {
 }
 
 func retryable(err error) bool {
-	if status, ok := err.(*statusError); ok {
+	var status *statusError
+	if errors.As(err, &status) {
 		return status.status >= 500
 	}
 	return true

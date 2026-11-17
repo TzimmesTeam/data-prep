@@ -1,0 +1,17 @@
+.git
+.github
+.codex
+.agents
+.aws
+.env
+.env.*
+*.pem
+*.key
+docs
+README.md
+LICENSE
+coverage.*
+*.out
+*.test
+bin
+dist

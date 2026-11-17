@@ -37,7 +37,7 @@ type Notifier interface {
 }
 
 type Transport struct {
-	cfg     Config
+	cfg     *Config
 	service *prepservice.Service
 	notify  Notifier
 	log     *slog.Logger
@@ -45,7 +45,7 @@ type Transport struct {
 	ready   atomic.Bool
 }
 
-func New(cfg Config, service *prepservice.Service, notify Notifier, log *slog.Logger) (*Transport, error) {
+func New(cfg *Config, service *prepservice.Service, notify Notifier, log *slog.Logger) (*Transport, error) {
 	options := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(cfg.Region)}
 	if cfg.AccessKeyID != "" {
 		options = append(options, awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
@@ -125,7 +125,7 @@ func (t *Transport) handleMessage(ctx context.Context, message types.Message) er
 		if err != nil {
 			return err
 		}
-		result, err := t.service.Prep(ctx, delivery)
+		result, err := t.service.Prep(ctx, &delivery)
 		if err != nil {
 			return err
 		}

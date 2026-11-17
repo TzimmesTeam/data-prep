@@ -1,6 +1,10 @@
 services:
   data-prep:
-    build: .
+    build:
+      context: .
+      args:
+        GO_VERSION: "1.24.9"
+        MAIN_PACKAGE: github.com/TzimmesTeam/data-prep/cmd/prep
     ports:
       - "8080:8080"
     restart: unless-stopped

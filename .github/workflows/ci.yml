@@ -2,44 +2,117 @@ name: CI
 
 on:
   push:
-    branches:
-      - develop
-      - main
+    branches: ['**']
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  test:
-    name: Go vet, test and build
+  inspect:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      module: ${{ steps.module.outputs.exists }}
+      release-title: ${{ steps.release.outputs.title }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - uses: actions/checkout@v7.0.1
         with:
-          go-version-file: go.mod
-      - name: Vet
-        run: go vet ./...
-      - name: Test
-        run: go test ./...
-      - name: Build
-        run: go build ./...
+          fetch-depth: 1
+      - id: module
+        run: |
+          if [[ -f go.mod ]]; then
+            echo 'exists=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'exists=false' >> "$GITHUB_OUTPUT"
+            echo 'Go module absent: Go checks and container build skipped.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - id: release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          tag=$RELEASE_TAG
+          git fetch --no-tags --depth=1 origin "refs/tags/$tag:refs/tags/$tag"
+          if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "Unsupported release tag: $tag; use v1.2.3 or v1.2.3-rc.1" >&2
+            exit 1
+          fi
+
+          if [[ $(git cat-file -t "refs/tags/$tag") != tag ]]; then
+            echo 'Release requires an annotated tag: git tag -a v1.2.3 -m "Release title"' >&2
+            exit 1
+          fi
+          title=$(git for-each-ref --format='%(contents:subject)' "refs/tags/$tag")
+          if [[ -z "${title//[[:space:]]/}" ]]; then
+            echo 'The annotated tag must have a non-empty message.' >&2
+            exit 1
+          fi
+          echo "title=$title" >> "$GITHUB_OUTPUT"
+
+          notes="docs/release/$tag.md"
+          if [[ ! -f "$notes" ]] || ! LC_ALL=C grep -q '[^[:space:]]' "$notes"; then
+            echo "Missing or empty release notes: $notes" >&2
+            exit 1
+          fi
+          echo "Release $tag uses $notes from commit $(git rev-parse HEAD)."
 
   lint:
-    name: golangci-lint
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-      - name: Lint
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.14.0
+    needs: inspect
+    if: needs.inspect.outputs.module == 'true'
+    uses: ./.github/workflows/lint.yml
+
+  test:
+    needs: inspect
+    if: needs.inspect.outputs.module == 'true'
+    uses: ./.github/workflows/test.yml
+
+  build:
+    needs: inspect
+    if: needs.inspect.outputs.module == 'true'
+    uses: ./.github/workflows/build.yml
+
+  container:
+    needs: build
+    if: needs.build.outputs.main-package != ''
+    uses: ./.github/workflows/container.yml
+    with:
+      main-package: ${{ needs.build.outputs.main-package }}
+      go-version: ${{ needs.build.outputs.go-version }}
+
+  publish:
+    needs: [lint, test, build, container]
+    if: startsWith(github.ref, 'refs/tags/') && needs.build.outputs.main-package != ''
+    uses: ./.github/workflows/publish.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      main-package: ${{ needs.build.outputs.main-package }}
+      go-version: ${{ needs.build.outputs.go-version }}
+
+  release:
+    needs: [inspect, lint, test, build, container, publish]
+    if: >-
+      always() && !cancelled() && startsWith(github.ref, 'refs/tags/') &&
+      needs.inspect.result == 'success' &&
+      (needs.lint.result == 'success' || needs.lint.result == 'skipped') &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped') &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped') &&
+      (needs.container.result == 'success' || needs.container.result == 'skipped') &&
+      (needs.publish.result == 'success' || needs.publish.result == 'skipped')
+    uses: ./.github/workflows/release.yml
+    with:
+      title: ${{ needs.inspect.outputs.release-title }}
+    permissions:
+      contents: write

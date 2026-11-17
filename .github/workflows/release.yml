@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  workflow_call:
+    inputs:
+      title:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Publish release from Markdown
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TITLE: ${{ inputs.title }}
+        run: |
+          args=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TITLE" \
+            --notes-file "docs/release/$RELEASE_TAG.md" "${args[@]}"

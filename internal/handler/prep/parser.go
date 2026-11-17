@@ -53,7 +53,7 @@ var dayConventionCodes = map[string]int32{
 }
 
 type Sink interface {
-	Deal(models.Deal) error
+	Deal(*models.Deal) error
 	Rejected(models.RejectedDeal) error
 }
 
@@ -69,12 +69,28 @@ func (p *Parser) Parse(r io.Reader, sink Sink) error {
 	reader := csv.NewReader(r)
 	reader.Comma = ';'
 	reader.TrimLeadingSpace = true
-
-	headers, err := reader.Read()
+	columns, err := p.readColumns(reader)
 	if err != nil {
-		return fmt.Errorf("read headers: %w", err)
+		return err
 	}
 
+	seen := make(map[int64]struct{})
+	for rowNumber := 2; ; rowNumber++ {
+		eof, err := p.parseNext(reader, columns, seen, sink, rowNumber)
+		if err != nil {
+			return err
+		}
+		if eof {
+			return nil
+		}
+	}
+}
+
+func (p *Parser) readColumns(reader *csv.Reader) (map[string]int, error) {
+	headers, err := reader.Read()
+	if err != nil {
+		return nil, fmt.Errorf("read headers: %w", err)
+	}
 	columns := make(map[string]int, len(headers))
 	for i, header := range headers {
 		header = strings.TrimSpace(strings.TrimPrefix(header, "\ufeff"))
@@ -83,68 +99,78 @@ func (p *Parser) Parse(r io.Reader, sink Sink) error {
 			continue
 		}
 		if _, exists := columns[header]; exists {
-			return fmt.Errorf("duplicate header: %s", header)
+			return nil, fmt.Errorf("duplicate header: %s", header)
 		}
 		columns[header] = i
 	}
-	var missing []string
+	missing := make([]string, 0, len(requiredHeaders))
 	for _, header := range requiredHeaders {
 		if _, ok := columns[header]; !ok {
 			missing = append(missing, header)
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("required headers are missing: %s", strings.Join(missing, ", "))
+		return nil, fmt.Errorf("required headers are missing: %s", strings.Join(missing, ", "))
 	}
 	reader.FieldsPerRecord = len(headers)
+	return columns, nil
+}
 
-	seen := make(map[int64]struct{})
-	for rowNumber := 2; ; rowNumber++ {
-		row, readErr := reader.Read()
-		if errors.Is(readErr, io.EOF) {
-			return nil
-		}
-		if errors.Is(readErr, csv.ErrFieldCount) {
-			rejected := models.RejectedDeal{Row: int64(rowNumber), Reasons: []string{readErr.Error()}}
-			if idx, ok := columns["deal_id"]; ok && idx < len(row) {
-				rejected.DealID = stringPointer(strings.TrimSpace(row[idx]))
-			}
-			if err := sink.Rejected(rejected); err != nil {
-				return fmt.Errorf("write rejected row %d: %w", rowNumber, err)
-			}
-			continue
-		}
-		if readErr != nil {
-			return fmt.Errorf("read row %d: %w", rowNumber, readErr)
-		}
-
-		rawDealID := strings.TrimSpace(row[columns["deal_id"]])
-		deal, reasons := parseDeal(row, columns)
-		decoder := rowDecoder{row: row, columns: columns, reasons: reasons}
-		warnings := normalizeDeal(&deal, &decoder)
-		reasons = decoder.reasons
-		for _, warning := range warnings {
-			p.log.Warn("deal normalized with warning", "row", rowNumber, "deal_id", rawDealID, "warning", warning)
-		}
-		if len(reasons) > 0 {
-			if err := sink.Rejected(models.RejectedDeal{DealID: stringPointer(rawDealID), Row: int64(rowNumber), Reasons: reasons}); err != nil {
-				return fmt.Errorf("write rejected row %d: %w", rowNumber, err)
-			}
-			continue
-		}
-		if deal.DealID != nil {
-			if _, exists := seen[*deal.DealID]; exists {
-				if err := sink.Rejected(models.RejectedDeal{DealID: stringPointer(rawDealID), Row: int64(rowNumber), Reasons: []string{"duplicate deal_id"}}); err != nil {
-					return fmt.Errorf("write rejected row %d: %w", rowNumber, err)
-				}
-				continue
-			}
-			seen[*deal.DealID] = struct{}{}
-		}
-		if err := sink.Deal(deal); err != nil {
-			return fmt.Errorf("write deal row %d: %w", rowNumber, err)
-		}
+func (p *Parser) parseNext(reader *csv.Reader, columns map[string]int, seen map[int64]struct{}, sink Sink, rowNumber int) (bool, error) {
+	row, readErr := reader.Read()
+	if errors.Is(readErr, io.EOF) {
+		return true, nil
 	}
+	if errors.Is(readErr, csv.ErrFieldCount) {
+		return false, rejectMalformedRow(row, columns, sink, rowNumber, readErr)
+	}
+	if readErr != nil {
+		return false, fmt.Errorf("read row %d: %w", rowNumber, readErr)
+	}
+	return false, p.processRow(row, columns, seen, sink, rowNumber)
+}
+
+func rejectMalformedRow(row []string, columns map[string]int, sink Sink, rowNumber int, readErr error) error {
+	rejected := models.RejectedDeal{Row: int64(rowNumber), Reasons: []string{readErr.Error()}}
+	if idx, ok := columns["deal_id"]; ok && idx < len(row) {
+		rejected.DealID = stringPointer(strings.TrimSpace(row[idx]))
+	}
+	if err := sink.Rejected(rejected); err != nil {
+		return fmt.Errorf("write rejected row %d: %w", rowNumber, err)
+	}
+	return nil
+}
+
+func (p *Parser) processRow(row []string, columns map[string]int, seen map[int64]struct{}, sink Sink, rowNumber int) error {
+	rawDealID := strings.TrimSpace(row[columns["deal_id"]])
+	deal, reasons := parseDeal(row, columns)
+	decoder := rowDecoder{row: row, columns: columns, reasons: reasons}
+	warnings := normalizeDeal(&deal, &decoder)
+	reasons = decoder.reasons
+	for _, warning := range warnings {
+		p.log.Warn("deal normalized with warning", "row", rowNumber, "deal_id", rawDealID, "warning", warning)
+	}
+	if len(reasons) > 0 {
+		return rejectRow(sink, rawDealID, rowNumber, reasons)
+	}
+	if deal.DealID != nil {
+		if _, exists := seen[*deal.DealID]; exists {
+			return rejectRow(sink, rawDealID, rowNumber, []string{"duplicate deal_id"})
+		}
+		seen[*deal.DealID] = struct{}{}
+	}
+	if err := sink.Deal(&deal); err != nil {
+		return fmt.Errorf("write deal row %d: %w", rowNumber, err)
+	}
+	return nil
+}
+
+func rejectRow(sink Sink, dealID string, rowNumber int, reasons []string) error {
+	rejected := models.RejectedDeal{DealID: stringPointer(dealID), Row: int64(rowNumber), Reasons: reasons}
+	if err := sink.Rejected(rejected); err != nil {
+		return fmt.Errorf("write rejected row %d: %w", rowNumber, err)
+	}
+	return nil
 }
 
 type rowDecoder struct {
@@ -210,6 +236,17 @@ func parseDeal(row []string, columns map[string]int) (models.Deal, []string) {
 }
 
 func normalizeDeal(deal *models.Deal, d *rowDecoder) []string {
+	normalizeCommon(deal, d)
+	warnings := normalizeDiscriminator(deal, d)
+	normalizeRateType(deal, d)
+	normalizeSubsidy(deal, d)
+	normalizeRepricingRules(deal, d)
+	normalizeCalendars(deal)
+	validateMaturity(deal, d)
+	return warnings
+}
+
+func normalizeCommon(deal *models.Deal, d *rowDecoder) {
 	for _, name := range requiredHeaders {
 		if d.raw(name) == "" {
 			d.add(name, "is required")
@@ -225,75 +262,89 @@ func normalizeDeal(deal *models.Deal, d *rowDecoder) []string {
 	if deal.DealReportDt == nil {
 		deal.DealReportDt = copyPointer(deal.ReportDt)
 	}
+}
 
+func normalizeDiscriminator(deal *models.Deal, d *rowDecoder) []string {
+	if deal.Discriminator == nil {
+		return nil
+	}
 	var warnings []string
-	if deal.Discriminator != nil {
-		switch *deal.Discriminator {
-		case 1:
+	switch *deal.Discriminator {
+	case 1:
+		requireCalendar(deal.RegularPaymentRuleStartDt, deal.RegularPaymentRulePeriodCd, "regular_payment_rule", d)
+		clearInterestRule(deal)
+	case 2:
+		if deal.RegularPaymentRulePeriodCd != nil {
 			requireCalendar(deal.RegularPaymentRuleStartDt, deal.RegularPaymentRulePeriodCd, "regular_payment_rule", d)
-			clearInterestRule(deal)
-		case 2:
-			if deal.RegularPaymentRulePeriodCd != nil {
-				requireCalendar(deal.RegularPaymentRuleStartDt, deal.RegularPaymentRulePeriodCd, "regular_payment_rule", d)
-			} else if deal.InterestPaymentRulePeriodCd == nil {
-				warnings = append(warnings, "RGM has no regular or interest payment rule; all payments are due at maturity")
-			}
-		case 3:
-			if deal.RegularPaymentRulePeriodCd != nil {
-				requireCalendar(deal.RegularPaymentRuleStartDt, deal.RegularPaymentRulePeriodCd, "regular_payment_rule", d)
-			}
+		} else if deal.InterestPaymentRulePeriodCd == nil {
+			warnings = append(warnings, "RGM has no regular or interest payment rule; all payments are due at maturity")
+		}
+	case 3:
+		if deal.RegularPaymentRulePeriodCd != nil {
+			requireCalendar(deal.RegularPaymentRuleStartDt, deal.RegularPaymentRulePeriodCd, "regular_payment_rule", d)
 		}
 	}
-	if deal.Discriminator != nil && *deal.Discriminator != 1 && deal.InterestPaymentRulePeriodCd != nil {
+	if *deal.Discriminator != 1 && deal.InterestPaymentRulePeriodCd != nil {
 		requireCalendar(deal.InterestPaymentRuleStartDt, deal.InterestPaymentRulePeriodCd, "interest_payment_rule", d)
 	}
+	return warnings
+}
 
-	if deal.RateTypeCd != nil {
-		switch *deal.RateTypeCd {
-		case 1:
-			clearFloating(deal)
-		case 2:
-			if deal.BaseIndicator == nil {
-				d.add("base_indicator", "is required for FLOAT")
-			}
+func normalizeRateType(deal *models.Deal, d *rowDecoder) {
+	if deal.RateTypeCd == nil {
+		return
+	}
+	switch *deal.RateTypeCd {
+	case 1:
+		clearFloating(deal)
+	case 2:
+		if deal.BaseIndicator == nil {
+			d.add("base_indicator", "is required for FLOAT")
 		}
 	}
+}
 
+func normalizeSubsidy(deal *models.Deal, d *rowDecoder) {
 	if deal.SubRateTypeCd == nil {
 		clearSubsidy(deal)
-	} else {
-		if deal.SubInterestRate == nil {
-			d.add("sub_interest_rate", "is required for subsidy")
-		}
-		requireCalendar(deal.SubPaymentRuleStartDt, deal.SubPaymentRulePeriodCd, "sub_payment_rule", d)
-		if *deal.SubRateTypeCd == 2 && deal.SubFloatIndicator == nil {
-			d.add("sub_float_indicator", "is required for FLOAT subsidy")
-		}
-		if *deal.SubRateTypeCd == 2 && deal.SubCoeffIndex == nil {
-			deal.SubCoeffIndex = floatPointer(1)
-		}
-		if *deal.SubRateTypeCd == 1 {
-			clearFloatingSubsidy(deal)
-		}
+		return
 	}
+	if deal.SubInterestRate == nil {
+		d.add("sub_interest_rate", "is required for subsidy")
+	}
+	requireCalendar(deal.SubPaymentRuleStartDt, deal.SubPaymentRulePeriodCd, "sub_payment_rule", d)
+	if *deal.SubRateTypeCd == 2 && deal.SubFloatIndicator == nil {
+		d.add("sub_float_indicator", "is required for FLOAT subsidy")
+	}
+	if *deal.SubRateTypeCd == 2 && deal.SubCoeffIndex == nil {
+		deal.SubCoeffIndex = floatPointer(1)
+	}
+	if *deal.SubRateTypeCd == 1 {
+		clearFloatingSubsidy(deal)
+	}
+}
 
+func normalizeRepricingRules(deal *models.Deal, d *rowDecoder) {
 	if deal.RepricingRulePeriodCd != nil {
 		requireCalendar(deal.RepricingRuleStartDt, deal.RepricingRulePeriodCd, "repricing_rule", d)
 	}
 	if deal.SubRepricingRulePeriodCd != nil {
 		requireCalendar(deal.SubRepricingRuleStartDt, deal.SubRepricingRulePeriodCd, "sub_repricing_rule", d)
 	}
+}
 
+func normalizeCalendars(deal *models.Deal) {
 	normalizeCalendar(&deal.InterestPaymentRuleStartDt, deal.InterestPaymentRulePeriodCd, &deal.InterestPaymentRuleDayNum, true)
 	normalizeCalendar(&deal.RegularPaymentRuleStartDt, deal.RegularPaymentRulePeriodCd, &deal.RegularPaymentRuleDayNum, true)
 	normalizeCalendar(&deal.RepricingRuleStartDt, deal.RepricingRulePeriodCd, &deal.RepricingRuleDayNum, false)
 	normalizeCalendar(&deal.SubPaymentRuleStartDt, deal.SubPaymentRulePeriodCd, &deal.SubPaymentRuleDayNum, true)
 	normalizeCalendar(&deal.SubRepricingRuleStartDt, deal.SubRepricingRulePeriodCd, &deal.SubRepricingRuleDayNum, true)
+}
 
+func validateMaturity(deal *models.Deal, d *rowDecoder) {
 	if deal.DealDt != nil && deal.MaturityDt != nil && *deal.MaturityDt <= *deal.DealDt {
 		d.add("maturity_dttm", "must be after deal_dttm")
 	}
-	return warnings
 }
 
 func requireCalendar(start *int64, period *int32, prefix string, d *rowDecoder) {
@@ -316,7 +367,7 @@ func normalizeCalendar(start **int64, period *int32, day **int32, defaultDay boo
 		return
 	}
 	if defaultDay && *day == nil {
-		value := int32(time.Unix(**start, 0).UTC().Day())
+		value := int32(time.Unix(**start, 0).UTC().Day()) // #nosec G115 -- calendar days are always in [1, 31].
 		*day = &value
 	}
 }

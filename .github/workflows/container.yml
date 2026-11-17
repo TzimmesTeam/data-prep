@@ -1,0 +1,49 @@
+name: Container
+
+on:
+  workflow_call:
+    inputs:
+      main-package:
+        required: true
+        type: string
+      go-version:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: docker/setup-buildx-action@v4.4.1
+      - id: image
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: echo "name=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          push: false
+          tags: ${{ steps.image.outputs.name }}:${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+          build-args: |
+            GO_VERSION=${{ inputs.go-version }}
+            MAIN_PACKAGE=${{ inputs.main-package }}
+          cache-from: type=gha,scope=container-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=container-${{ matrix.arch }}
+          provenance: false
+          sbom: false
+
