@@ -24,7 +24,7 @@ type App struct {
 func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.StartupTimeout)
 	defer cancel()
-	store, err := s3storage.New(ctx, s3storage.Config{
+	store, err := s3storage.New(ctx, &s3storage.Config{
 		Region:          cfg.S3.Region,
 		Endpoint:        cfg.S3.Endpoint,
 		AccessKeyID:     cfg.S3.AccessKeyID,
@@ -35,8 +35,8 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := store.CheckConfiguredBuckets(ctx); err != nil {
-		return nil, err
+	if checkErr := store.CheckConfiguredBuckets(ctx); checkErr != nil {
+		return nil, checkErr
 	}
 
 	svc := prepservice.New(store, prephandler.NewParser(log), prepservice.Buckets{
@@ -49,7 +49,7 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 		MaxAttempts: cfg.ControlPlane.MaxAttempts,
 		RetryDelay:  cfg.ControlPlane.RetryDelay,
 	})
-	queue, err := sqstransport.New(sqstransport.Config{
+	queue, err := sqstransport.New(&sqstransport.Config{
 		Region:            cfg.SQS.Region,
 		Endpoint:          cfg.SQS.Endpoint,
 		QueueURL:          cfg.SQS.QueueURL,

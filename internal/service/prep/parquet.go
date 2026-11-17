@@ -41,9 +41,9 @@ func newParquetSink(log *slog.Logger) (*parquetSink, error) {
 	}, nil
 }
 
-func (s *parquetSink) Deal(deal models.Deal) error {
-	ensureLists(&deal)
-	if _, err := s.dealsWriter.Write([]models.Deal{deal}); err != nil {
+func (s *parquetSink) Deal(deal *models.Deal) error {
+	ensureLists(deal)
+	if _, err := s.dealsWriter.Write([]models.Deal{*deal}); err != nil {
 		return fmt.Errorf("write curated Parquet row: %w", err)
 	}
 	s.stats.DealsIn++

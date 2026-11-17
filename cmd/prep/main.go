@@ -28,7 +28,7 @@ func main() {
 	go func() {
 		<-ctx.Done()
 		log.Info("shutdown signal received")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.HTTP.ShutdownTimeout)
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.HTTP.ShutdownTimeout)
 		defer cancel()
 		if err := application.Stop(shutdownCtx); err != nil {
 			log.Error("failed to stop app", "error", err)

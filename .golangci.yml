@@ -1,0 +1,65 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  default: none
+  enable:
+    - bidichk
+    - bodyclose
+    - contextcheck
+    - durationcheck
+    - errcheck
+    - errorlint
+    - fatcontext
+    - gocognit
+    - gocritic
+    - gocyclo
+    - gosec
+    - govet
+    - ineffassign
+    - makezero
+    - nilerr
+    - nilnesserr
+    - noctx
+    - prealloc
+    - rowserrcheck
+    - sqlclosecheck
+    - staticcheck
+    - wastedassign
+  settings:
+    gocognit:
+      min-complexity: 20
+    gocyclo:
+      min-complexity: 15
+    govet:
+      enable:
+        - nilness
+        - shadow
+    gocritic:
+      disable-all: true
+      enabled-checks:
+        - appendCombine
+        - equalFold
+        - hugeParam
+        - indexAlloc
+        - rangeExprCopy
+        - rangeValCopy
+        - stringXbytes
+    prealloc:
+      simple: true
+      range-loops: true
+      for-loops: false
+    gosec:
+      severity: low
+      confidence: medium
+  exclusions:
+    generated: strict
+    presets: []
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

@@ -38,11 +38,17 @@ func New(store ObjectStore, parser CSVParser, buckets Buckets, log *slog.Logger)
 	return &Service{store: store, parser: parser, buckets: buckets, log: log}
 }
 
-func (s *Service) Prep(ctx context.Context, delivery models.Delivery) (models.PrepResult, error) {
-	result := models.PrepResult{Delivery: delivery}
-	if delivery.Bucket == "" || delivery.Key == "" || delivery.Source == "" || delivery.IngestDate == "" || delivery.SnapshotID == "" {
+func completeDelivery(delivery *models.Delivery) bool {
+	return delivery != nil && delivery.Bucket != "" && delivery.Key != "" && delivery.Source != "" &&
+		delivery.IngestDate != "" && delivery.SnapshotID != ""
+}
+
+func (s *Service) Prep(ctx context.Context, delivery *models.Delivery) (models.PrepResult, error) {
+	result := models.PrepResult{}
+	if !completeDelivery(delivery) {
 		return result, fmt.Errorf("incomplete delivery")
 	}
+	result.Delivery = *delivery
 	sourceURI := s3storage.URI{Bucket: delivery.Bucket, Key: delivery.Key}
 	source, err := s.store.HeadSource(ctx, sourceURI)
 	if err != nil {

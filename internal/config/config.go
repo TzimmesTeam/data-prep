@@ -74,22 +74,49 @@ func MustLoad() *Config {
 }
 
 func (c *Config) Validate() error {
+	validators := []func() error{
+		c.validateHTTP,
+		c.validateS3,
+		c.validateSQS,
+		c.validateControlPlane,
+	}
+	for _, validate := range validators {
+		if err := validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Config) validateHTTP() error {
 	if c.StartupTimeout <= 0 || c.HTTP.ShutdownTimeout <= 0 {
 		return fmt.Errorf("startup and shutdown timeouts must be positive")
 	}
 	if c.HTTP.Port < 1 || c.HTTP.Port > 65535 {
 		return fmt.Errorf("invalid HTTP port")
 	}
+	return nil
+}
+
+func (c *Config) validateS3() error {
 	if c.S3.Region == "" || c.S3.AccessKeyID == "" || c.S3.SecretAccessKey == "" ||
 		c.S3.RawBucket == "" || c.S3.CuratedBucket == "" || c.S3.QuarantineBucket == "" {
 		return fmt.Errorf("incomplete S3 config")
 	}
+	return nil
+}
+
+func (c *Config) validateSQS() error {
 	if c.SQS.Region == "" || c.SQS.QueueURL == "" || c.SQS.AccessKeyID == "" || c.SQS.SecretAccessKey == "" {
 		return fmt.Errorf("incomplete SQS config")
 	}
 	if c.SQS.WaitTimeSeconds < 0 || c.SQS.WaitTimeSeconds > 20 || c.SQS.VisibilityTimeout <= 0 || c.SQS.ReconnectDelay <= 0 {
 		return fmt.Errorf("invalid SQS polling config")
 	}
+	return nil
+}
+
+func (c *Config) validateControlPlane() error {
 	if _, err := url.ParseRequestURI(c.ControlPlane.URL); err != nil {
 		return fmt.Errorf("invalid control plane URL: %w", err)
 	}

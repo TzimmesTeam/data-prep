@@ -1,0 +1,59 @@
+name: Build
+
+on:
+  workflow_call:
+    outputs:
+      main-package:
+        value: ${{ jobs.build.outputs.main-package }}
+      go-version:
+        value: ${{ jobs.build.outputs.go-version }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      main-package: ${{ steps.build.outputs.main-package }}
+      go-version: ${{ steps.build.outputs.go-version }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.mod
+            go.sum
+            .github/workflows/build.yml
+      - run: go mod download && go mod verify
+      - name: Build and detect executable
+        id: build
+        env:
+          MAIN_PACKAGE: ${{ vars.MAIN_PACKAGE }}
+        run: |
+          go build -mod=readonly ./...
+          packages=$(go list -mod=readonly -f '{{if eq .Name "main"}}{{.ImportPath}}{{end}}' ./...)
+          if [[ -n "$MAIN_PACKAGE" ]]; then
+            [[ $(go list -mod=readonly -f '{{.Name}}' "$MAIN_PACKAGE") == main ]] || exit 1
+            package=$MAIN_PACKAGE
+          else
+            mapfile -t mains < <(printf '%s\n' "$packages" | sed '/^$/d')
+            if (( ${#mains[@]} > 1 )); then
+              echo 'Multiple main packages: set the MAIN_PACKAGE repository variable.' >&2
+              exit 1
+            fi
+            package=${mains[0]:-}
+          fi
+          echo "main-package=$package" >> "$GITHUB_OUTPUT"
+          echo "go-version=$(go env GOVERSION | sed 's/^go//')" >> "$GITHUB_OUTPUT"
+          if [[ -z "$package" ]]; then
+            echo 'No main package: container build skipped.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+

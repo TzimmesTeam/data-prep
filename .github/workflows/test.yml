@@ -1,0 +1,38 @@
+name: Tests
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.mod
+            go.sum
+            .github/workflows/test.yml
+      - name: Tests with race detector
+        run: |
+          packages=$(go list -mod=readonly -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./...)
+          if [[ -z "${packages//[[:space:]]/}" ]]; then
+            echo 'No Go tests: skipped.'
+            if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+              echo 'No Go tests: skipped.' >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 0
+          fi
+
+          go test -mod=readonly -vet=off -race -shuffle=on -count=1 -timeout=5m ./...
