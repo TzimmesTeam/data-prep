@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
-	"path"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -173,8 +172,11 @@ func parseDelivery(bucket, encodedKey string) (models.Delivery, error) {
 		return models.Delivery{}, fmt.Errorf("decode S3 object key: %w", err)
 	}
 	parts := strings.Split(key, "/")
-	if len(parts) != 4 || strings.ToLower(path.Ext(parts[3])) != ".csv" {
-		return models.Delivery{}, fmt.Errorf("unexpected RAW CSV key %q", key)
+	if len(parts) != 4 {
+		return models.Delivery{}, fmt.Errorf("unexpected RAW key %q", key)
+	}
+	if _, err := models.SourceFormatFromKey(parts[3]); err != nil {
+		return models.Delivery{}, fmt.Errorf("unexpected RAW key %q: %w", key, err)
 	}
 	delivery := models.Delivery{Bucket: bucket, Key: key}
 	for _, part := range parts[:3] {

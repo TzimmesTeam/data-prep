@@ -1,7 +1,6 @@
 package prep
 
 import (
-	"encoding/csv"
 	"errors"
 	"fmt"
 	"io"
@@ -65,18 +64,30 @@ func NewParser(log *slog.Logger) *Parser {
 	return &Parser{log: log}
 }
 
-func (p *Parser) Parse(r io.Reader, sink Sink) error {
-	reader := csv.NewReader(r)
-	reader.Comma = ';'
-	reader.TrimLeadingSpace = true
+func (p *Parser) Parse(r io.Reader, format models.SourceFormat, sink Sink) error {
+	reader, err := newRowReader(r, format)
+	if err != nil {
+		return err
+	}
+	parseErr := p.parse(reader, sink)
+	closeErr := reader.Close()
+	if parseErr != nil {
+		return parseErr
+	}
+	return closeErr
+}
+
+func (p *Parser) parse(reader rowReader, sink Sink) error {
 	columns, err := p.readColumns(reader)
 	if err != nil {
 		return err
 	}
+	excelDates, date1904 := reader.ExcelDates()
+	opts := decodeOptions{excel: excelDates, date1904: date1904}
 
 	seen := make(map[int64]struct{})
-	for rowNumber := 2; ; rowNumber++ {
-		eof, err := p.parseNext(reader, columns, seen, sink, rowNumber)
+	for {
+		eof, err := p.parseNext(reader, columns, opts, seen, sink)
 		if err != nil {
 			return err
 		}
@@ -86,16 +97,19 @@ func (p *Parser) Parse(r io.Reader, sink Sink) error {
 	}
 }
 
-func (p *Parser) readColumns(reader *csv.Reader) (map[string]int, error) {
-	headers, err := reader.Read()
+func (p *Parser) readColumns(reader rowReader) (map[string]int, error) {
+	headers, _, err := reader.Read()
 	if err != nil {
 		return nil, fmt.Errorf("read headers: %w", err)
 	}
 	columns := make(map[string]int, len(headers))
 	for i, header := range headers {
 		header = strings.TrimSpace(strings.TrimPrefix(header, "\ufeff"))
+		if header == "" {
+			continue
+		}
 		if _, known := knownHeaderSet[header]; !known {
-			p.log.Warn("ignoring unknown CSV header", "header", header, "position", i+1)
+			p.log.Warn("ignoring unknown header", "header", header, "position", i+1)
 			continue
 		}
 		if _, exists := columns[header]; exists {
@@ -112,22 +126,22 @@ func (p *Parser) readColumns(reader *csv.Reader) (map[string]int, error) {
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("required headers are missing: %s", strings.Join(missing, ", "))
 	}
-	reader.FieldsPerRecord = len(headers)
+	reader.SetWidth(len(headers))
 	return columns, nil
 }
 
-func (p *Parser) parseNext(reader *csv.Reader, columns map[string]int, seen map[int64]struct{}, sink Sink, rowNumber int) (bool, error) {
-	row, readErr := reader.Read()
+func (p *Parser) parseNext(reader rowReader, columns map[string]int, opts decodeOptions, seen map[int64]struct{}, sink Sink) (bool, error) {
+	row, rowNumber, readErr := reader.Read()
 	if errors.Is(readErr, io.EOF) {
 		return true, nil
 	}
-	if errors.Is(readErr, csv.ErrFieldCount) {
+	if errors.Is(readErr, errFieldCount) {
 		return false, rejectMalformedRow(row, columns, sink, rowNumber, readErr)
 	}
 	if readErr != nil {
 		return false, fmt.Errorf("read row %d: %w", rowNumber, readErr)
 	}
-	return false, p.processRow(row, columns, seen, sink, rowNumber)
+	return false, p.processRow(row, columns, opts, seen, sink, rowNumber)
 }
 
 func rejectMalformedRow(row []string, columns map[string]int, sink Sink, rowNumber int, readErr error) error {
@@ -141,12 +155,12 @@ func rejectMalformedRow(row []string, columns map[string]int, sink Sink, rowNumb
 	return nil
 }
 
-func (p *Parser) processRow(row []string, columns map[string]int, seen map[int64]struct{}, sink Sink, rowNumber int) error {
+func (p *Parser) processRow(row []string, columns map[string]int, opts decodeOptions, seen map[int64]struct{}, sink Sink, rowNumber int) error {
 	rawDealID := strings.TrimSpace(row[columns["deal_id"]])
-	deal, reasons := parseDeal(row, columns)
-	decoder := rowDecoder{row: row, columns: columns, reasons: reasons}
+	decoder := rowDecoder{row: row, columns: columns, opts: opts}
+	deal := parseDeal(&decoder)
 	warnings := normalizeDeal(&deal, &decoder)
-	reasons = decoder.reasons
+	reasons := decoder.reasons
 	for _, warning := range warnings {
 		p.log.Warn("deal normalized with warning", "row", rowNumber, "deal_id", rawDealID, "warning", warning)
 	}
@@ -173,14 +187,19 @@ func rejectRow(sink Sink, dealID string, rowNumber int, reasons []string) error 
 	return nil
 }
 
+type decodeOptions struct {
+	excel bool
+	date1904 bool
+}
+
 type rowDecoder struct {
 	row     []string
 	columns map[string]int
+	opts    decodeOptions
 	reasons []string
 }
 
-func parseDeal(row []string, columns map[string]int) (models.Deal, []string) {
-	d := rowDecoder{row: row, columns: columns}
+func parseDeal(d *rowDecoder) models.Deal {
 	deal := models.Deal{
 		ReportDt:                      d.timestamp("report_dttm"),
 		Discriminator:                 d.enum("discriminator", discriminatorCodes),
@@ -232,7 +251,7 @@ func parseDeal(row []string, columns map[string]int) (models.Deal, []string) {
 	deal.RepricingDtSchedule = d.dates("repricing_dttm_schedule")
 	deal.RepricingDtRateScheduleDates, deal.RepricingDtRateScheduleRates = d.datedNumbers("repricing_dttm_rate_schedule")
 	deal.RepricingDtRateScheduleFixedDates, deal.RepricingDtRateScheduleFixedRates = d.datedNumbers("repricing_dttm_rate_schedule_fixed")
-	return deal, d.reasons
+	return deal
 }
 
 func normalizeDeal(deal *models.Deal, d *rowDecoder) []string {
@@ -458,7 +477,7 @@ func (d *rowDecoder) int64(name string) *int64 {
 	if value == "" {
 		return nil
 	}
-	parsed, err := strconv.ParseInt(value, 10, 64)
+	parsed, err := d.parseInt(value, 64)
 	if err != nil {
 		d.add(name, "invalid int64: "+value)
 		return nil
@@ -471,13 +490,63 @@ func (d *rowDecoder) int32(name string) *int32 {
 	if value == "" {
 		return nil
 	}
-	parsed, err := strconv.ParseInt(value, 10, 32)
-	if err != nil {
+	parsed, err := d.parseInt(value, 32)
+	if err != nil || parsed < math.MinInt32 || parsed > math.MaxInt32 {
 		d.add(name, "invalid int32: "+value)
 		return nil
 	}
 	result := int32(parsed)
 	return &result
+}
+
+const maxExactFloatInt = 1 << 53
+
+func (d *rowDecoder) parseInt(value string, bitSize int) (int64, error) {
+	parsed, err := strconv.ParseInt(value, 10, bitSize)
+	if err == nil || !d.opts.excel {
+		return parsed, err
+	}
+	number, floatErr := strconv.ParseFloat(value, 64)
+	if floatErr != nil || number != math.Trunc(number) || math.Abs(number) > maxExactFloatInt {
+		return 0, err
+	}
+	limit := float64(int64(1) << (bitSize - 1))
+	if number < -limit || number >= limit {
+		return 0, err
+	}
+	return int64(number), nil
+}
+
+func (d *rowDecoder) parseDate(value string) (models.Date, error) {
+	parsed, err := models.ParseDate(value)
+	if err == nil || !d.opts.excel {
+		return parsed, err
+	}
+	serial, floatErr := strconv.ParseFloat(value, 64)
+	if floatErr != nil || serial <= 0 || math.IsInf(serial, 0) {
+		return models.Date{}, err
+	}
+	converted, ok := excelSerialDate(serial, d.opts.date1904)
+	if !ok {
+		return models.Date{}, err
+	}
+	return converted, nil
+}
+
+const maxExcelSerial = 2958465
+
+func excelSerialDate(serial float64, date1904 bool) (models.Date, bool) {
+	if serial < 1 || serial > maxExcelSerial {
+		return models.Date{}, false
+	}
+	days := int(math.Floor(serial))
+	if date1904 {
+		return models.NewDate(time.Date(1904, 1, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, days)), true
+	}
+	if days < 61 {
+		return models.NewDate(time.Date(1899, 12, 31, 0, 0, 0, 0, time.UTC).AddDate(0, 0, days)), true
+	}
+	return models.NewDate(time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC).AddDate(0, 0, days)), true
 }
 
 func (d *rowDecoder) float64(name string) *float64 {
@@ -506,7 +575,7 @@ func (d *rowDecoder) timestamp(name string) *int64 {
 	if value == "" {
 		return nil
 	}
-	parsed, err := models.ParseDate(value)
+	parsed, err := d.parseDate(value)
 	if err != nil {
 		d.add(name, err.Error())
 		return nil
@@ -592,7 +661,7 @@ func (d *rowDecoder) dates(name string) []int64 {
 	parts := strings.Fields(value)
 	result = make([]int64, 0, len(parts))
 	for _, part := range parts {
-		parsed, err := models.ParseDate(part)
+		parsed, err := d.parseDate(part)
 		if err != nil {
 			d.add(name, err.Error())
 			continue
@@ -629,7 +698,7 @@ func (d *rowDecoder) datedNumbers(name string) ([]int64, []float64) {
 			continue
 		}
 		dateValue, numberValue, _ := strings.Cut(part, ",")
-		date, dateErr := models.ParseDate(dateValue)
+		date, dateErr := d.parseDate(dateValue)
 		number, numberErr := parseFloat(numberValue)
 		if dateErr != nil || numberErr != nil {
 			d.add(name, "invalid date/number entry: "+part)

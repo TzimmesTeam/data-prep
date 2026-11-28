@@ -49,7 +49,9 @@ services:
         mc mb --ignore-existing local/raw local/curated local/quarantine &&
         case "$(mc event ls local/raw)" in
           *arn:minio:sqs::RAW_EVENTS:webhook*) ;;
-          *) mc event add local/raw arn:minio:sqs::RAW_EVENTS:webhook --event put --suffix .csv ;;
+          *) mc event add local/raw arn:minio:sqs::RAW_EVENTS:webhook --event put --suffix .csv &&
+             mc event add local/raw arn:minio:sqs::RAW_EVENTS:webhook --event put --suffix .xlsx &&
+             mc event add local/raw arn:minio:sqs::RAW_EVENTS:webhook --event put --suffix .xlsm ;;
         esac
 
   event-bridge:
