@@ -23,18 +23,18 @@ type ObjectStore interface {
 	Put(context.Context, s3storage.URI, io.Reader, int64, string) error
 }
 
-type CSVParser interface {
-	Parse(io.Reader, prepparser.Sink) error
+type Parser interface {
+	Parse(io.Reader, models.SourceFormat, prepparser.Sink) error
 }
 
 type Service struct {
 	store   ObjectStore
-	parser  CSVParser
+	parser  Parser
 	buckets Buckets
 	log     *slog.Logger
 }
 
-func New(store ObjectStore, parser CSVParser, buckets Buckets, log *slog.Logger) *Service {
+func New(store ObjectStore, parser Parser, buckets Buckets, log *slog.Logger) *Service {
 	return &Service{store: store, parser: parser, buckets: buckets, log: log}
 }
 
@@ -49,6 +49,10 @@ func (s *Service) Prep(ctx context.Context, delivery *models.Delivery) (models.P
 		return result, fmt.Errorf("incomplete delivery")
 	}
 	result.Delivery = *delivery
+	format, err := models.SourceFormatFromKey(delivery.Key)
+	if err != nil {
+		return result, err
+	}
 	sourceURI := s3storage.URI{Bucket: delivery.Bucket, Key: delivery.Key}
 	source, err := s.store.HeadSource(ctx, sourceURI)
 	if err != nil {
@@ -67,10 +71,10 @@ func (s *Service) Prep(ctx context.Context, delivery *models.Delivery) (models.P
 	}
 	defer sink.cleanup()
 
-	parseErr := s.parser.Parse(body, sink)
+	parseErr := s.parser.Parse(body, format, sink)
 	closeErr := body.Close()
 	if parseErr != nil {
-		return result, fmt.Errorf("parse CSV: %w", parseErr)
+		return result, fmt.Errorf("parse %s: %w", format, parseErr)
 	}
 	if closeErr != nil {
 		return result, closeErr
@@ -101,6 +105,7 @@ func (s *Service) Prep(ctx context.Context, delivery *models.Delivery) (models.P
 
 	s.log.InfoContext(ctx, "prep completed",
 		"snapshot_id", delivery.SnapshotID,
+		"source_format", format.String(),
 		"source_revision", source.Revision,
 		"deals_in", sink.stats.DealsIn,
 		"deals_ok", sink.stats.DealsOK,
